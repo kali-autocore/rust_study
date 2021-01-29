@@ -11,15 +11,21 @@ use zenoh::*;
 #[derive(Deserialize, Serialize)]
 struct Path {
     path: String,
-    value: Integer,
+    value: u32,
 }
 
-async fn put_message(path, value) {
+async fn put_message(path: String, value:u32) {
     // initiate logging
-    env_logger::init();
-
-    let path = mess;
+    // env_logger::init();
+    println!("Enter put_message");
+    let path = path;
     let value = value;
+
+    let mut config = Properties::default();
+    // for key in ["mode", "peer", "listener"].iter() {
+    //     config.insert(key.to_string(), key.to_string());
+    // }
+
     println!("New zenoh...");
     let zenoh = Zenoh::new(config.into()).await.unwrap();
 
@@ -28,47 +34,11 @@ async fn put_message(path, value) {
 
     println!("Put Data ('{}': '{}')...\n", path, value);
     workspace
-        .put(&path.try_into().unwrap(), value.into())
+        .put(&path.try_into().unwrap(), value.to_string().into())
         .await
         .unwrap();
-
-    // --- Examples of put with other types:
-
-    // - Integer
-    // workspace.put(&"/demo/example/Integer".try_into().unwrap(), 3.into())
-    //     .await.unwrap();
-
-    // - Float
-    // workspace.put(&"/demo/example/Float".try_into().unwrap(), 3.14.into())
-    //     .await.unwrap();
-
-    // - Properties (as a Dictionary with str only)
-    // workspace.put(
-    //         &"/demo/example/Properties".try_into().unwrap(),
-    //         Properties::from("p1=v1;p2=v2").into()
-    //     ).await.unwrap();
-
-    // - Json (str format)
-    // workspace.put(
-    //         &"/demo/example/Json".try_into().unwrap(),
-    //         Value::Json(r#"{"kind"="memory"}"#.to_string()),
-    //     ).await.unwrap();
-
-    // - Raw ('application/octet-stream' encoding by default)
-    // workspace.put(
-    //         &"/demo/example/Raw".try_into().unwrap(),
-    //         vec![0x48u8, 0x69, 0x33].into(),
-    //     ).await.unwrap();
-
-    // - Custom
-    // workspace.put(
-    //         &"/demo/example/Custom".try_into().unwrap(),
-    //         Value::Custom {
-    //             encoding_descr: "my_encoding".to_string(),
-    //             data: vec![0x48u8, 0x69, 0x33].into(),
-    //     }).await.unwrap();
-
     zenoh.close().await.unwrap();
+    ()
 }
 
 #[async_std::main]
@@ -79,14 +49,16 @@ async fn main() -> tide::Result<()> {
     app.at("/submit").post(|mut req: Request<()>| async move {
         let path: Path = req.body_json().await?;
         println!("Path: {}, Value: {}", path.path, path.value);
-
-        if path.value != 1 {
-            put_message(path.path, path.value).await?;
+        let p = path.path;
+        let v = path.value;
+        if p == "/demo/example/test" {
+            put_message(p, v).await;
         } else {
-            println!("value is not equal 1, can't publish path/value, path: {}, Value: {}", path.path, path.value);
+            println!("value is not equal 1, can't publish path/value, path: {}, Value: {}", &p, &v);
         }
 
-        Ok(Body::from_json(&cat)?)
+
+        Ok(Body::from_json(&9)?)
     });
 
     app.listen("127.0.0.1:8080").await?;
