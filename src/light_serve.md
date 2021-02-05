@@ -54,5 +54,5 @@ URL： {url}/rule_change
 ## Zenoh 存储
 Zenoh 存储path/value
 
-path： 某路口发布的红绿灯存储path，/{road_id}/{light_id}
+path： 某路口发布的红绿灯存储path，/light/{road_id}/{light_id}
 value: 该红绿灯的值，1 绿灯 2 红灯 3 黄灯
