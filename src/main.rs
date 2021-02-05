@@ -1,78 +1,57 @@
-use futures::prelude::*;
+use serde::{Deserialize, Serialize};
+// use tide::prelude::*; // Pulls in the json! macro.
+use tide::{Body, Request};
 use std::convert::TryInto;
 use zenoh::*;
 
-use clap::{App, Arg};
+#[derive(Deserialize, Serialize)]
+struct Light {
+    id: i32,
+    state: String,
+}
 
-#[async_std::main]
-async fn main() {
-    // initiate logging
-    env_logger::init();
+#[derive(Deserialize, Serialize)]
+struct Message {
+    path: String,
+    value: Light,
+}
 
-    let (config, selector) = parse_args();
+#[derive(Deserialize, Serialize)]
+struct Response {
+    status: i32,
+    message: String,
+}
 
-    println!("New zenoh...");
+// publish message to zenoh
+async fn pub_message(path:String, value:String) {
+    let config = Properties::default();
     let zenoh = Zenoh::new(config.into()).await.unwrap();
 
     println!("New workspace...");
     let workspace = zenoh.workspace(None).await.unwrap();
 
-    let path = "/demo/example/test";
-    let value = "123";
     println!("Put Data ('{}': '{}')...\n", path, value);
     workspace
         .put(&path.try_into().unwrap(), value.into())
         .await
         .unwrap();
-
-    println!("Get Data from {}'...\n", selector);
-    let mut data_stream = workspace.get(&selector.try_into().unwrap()).await.unwrap();
-    while let Some(data) = data_stream.next().await {
-        println!(
-            "  {} : {:?} (encoding: {} , timestamp: {})",
-            data.path,
-            data.value,
-            data.value.encoding_descr(),
-            data.timestamp
-        )
-    }
-
-    zenoh.close().await.unwrap();
 }
 
-fn parse_args() -> (Properties, String) {
-    let args = App::new("zenoh get example")
-        .arg(
-            Arg::from_usage("-m, --mode=[MODE] 'The zenoh session mode.")
-                .possible_values(&["peer", "client"])
-                .default_value("peer"),
-        )
-        .arg(Arg::from_usage(
-            "-e, --peer=[LOCATOR]...  'Peer locators used to initiate the zenoh session.'",
-        ))
-        .arg(Arg::from_usage(
-            "-l, --listener=[LOCATOR]...   'Locators to listen on.'",
-        ))
-        .arg(
-            Arg::from_usage("-s, --selector=[SELECTOR] 'The selection of resources to get'")
-                .default_value("/demo/example/test"),
-        )
-        .arg(Arg::from_usage(
-            "--no-multicast-scouting 'Disable the multicast-based scouting mechanism.'",
-        ))
-        .get_matches();
+#[async_std::main]
+async fn main() -> tide::Result<()> {
+    tide::log::start();
+    let mut app = tide::new();
 
-    let mut config = Properties::default();
-    for key in ["mode", "peer", "listener"].iter() {
-        if let Some(value) = args.values_of(key) {
-            config.insert(key.to_string(), value.collect::<Vec<&str>>().join(","));
-        }
-    }
-    if args.is_present("no-multicast-scouting") {
-        config.insert("multicast_scouting".to_string(), "false".to_string());
-    }
+    app.at("/light").post(|mut req: Request<()>| async move{
+        let message: Message = req.body_json().await?;
+        println!("Message: {}", message.path);
+        let path = format!("{}/{}", message.path, message.value.id.to_string());
+        let value = format!("{}", message.value.state);
+        pub_message(path, value).await;
+        let ret_message = Response {status: 1, message: String::from("")};
+        Ok(Body::from_json(&ret_message)?)
+    });
 
-    let selector = args.value_of("selector").unwrap().to_string();
-
-    (config, selector)
+    app.listen("127.0.0.1:8080").await?;
+    Ok(())
 }
