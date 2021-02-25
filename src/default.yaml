@@ -1,0 +1,20 @@
+road_id: "1111111"  # 红绿灯路口的ID，和地图中的路口对应
+light_id:
+  orientation_1: "1"  # 红绿灯ID，和地图中的路口灯对应
+  orientation_2: "2"
+  orientation_3: "3"
+  orientation_4: "4"
+
+master: "orientation_1"  # 启动服务时的主方向，即优先计算红绿灯的方向，必须是light_id中key
+
+color: "RED"  # 红绿灯启动时颜色, 1绿灯 2 红灯 3黄灯
+groups: {
+  # 方向组合，同一组的方向一致，如果没有相对的，则为中划线“-”
+  orientation_1: "orientation_2",
+  orientation_3: "orientation_4"
+} 
+duration:
+  green: 7
+  yellow: 3
+  red: 10
+

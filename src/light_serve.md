@@ -37,8 +37,8 @@ URL： {url}/rule_change
 请求内容：
 |  字段   | 类型  | 描述  |
 |  ----  | ----  | ----  |
-| cross_road_id  | string | 十字路口ID |
-| sn             | i32    | 南北方向红绿灯状态：1 绿 2 红 3 黄|
+| road_id  | string | 十字路口ID |
+| light_name1             | i32    | 红绿灯名字以及时间|
 | sn_time        | i32    | 南北方向灯剩余时间               |
 | ew             | i32    | 东西方向红绿灯状态：1 绿 2 红 3 黄|
 | ew_time        | i32    | 东西方向灯剩余时间               |
@@ -52,7 +52,8 @@ URL： {url}/rule_change
 
 
 ## Zenoh 存储
-Zenoh 存储path/value
+Zenoh 存储 path/value
 
-path： 某路口发布的红绿灯存储path，/light/{road_id}/{light_id}
+path： 某路口发布的红绿灯存储path，/light/detail/{road_id}
+
 value: 该红绿灯的值，1 绿灯 2 红灯 3 黄灯
