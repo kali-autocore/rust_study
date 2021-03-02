@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tide::{Body, Request};
 use zenoh::*;
 use tokio;
+use tokio::task;
 use tokio::time::Instant;
 use std::convert::TryInto;
 // use lazy_static;
@@ -49,9 +50,9 @@ struct LightDuration {
 
 #[derive(Deserialize, Serialize, Debug)]
 struct RuleMessage {
-    name: String,
+    light_id: String,
     color: i32,
-    duration: i64,
+    remain: i64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -194,48 +195,39 @@ fn inverse_color(color: &LightColor, counter: i64) -> LightColor {
     }
 }
 // 根据配置，给LIGHTDURATION赋值
-fn init_light_duration(init_color: &LightColor, counter: i64) {
+fn init_light_duration(init_color: i32, counter: i64) {
     let color = init_color.clone();
     let lcfg = LIGHTDURATION.lock().unwrap();
+    // 1 红 2 绿 3 黄 0 灭灯
     match color {
-        LightColor::GREEN => lcfg.green = counter,
-        LightColor::RED => lcfg.red = counter,
-        LightColor::YELLOW => lcfg.yellow = counter,
-        LightColor::UNKNOWN => lcfg.unknown = counter,
+        2 => lcfg.green = counter,
+        1 => lcfg.red = counter,
+        3=> lcfg.yellow = counter,
+        0 => lcfg.unknown = counter,
     };
 }
 
-// 根据配置计算所有灯的初始状态status
-fn init_lgt_status(lgt_id: String, init_color: LightColor, groups: &Vec<[String;2]>){
-    let group1 = groups[0].clone();
-    let group2 = groups[1].clone();
-    let lgt_id1 = group1[0];
-    let lgt_id2 = group1[1];
-    let lgt_id3 = group2[0];
-    let lgt_id4 = group2[1];
-    let counter = get_duration(&init_color);
-    let in_color = inverse_color(&init_color, counter);  // 反转的颜色
-    let in_counter = get_duration(&in_color);  // 反转的时长
-    let mut lgt_status = LIGHTSTATUS.lock().unwrap();
-    // 获取灯色对应的时长
-    if lgt_id == lgt_id1 || lgt_id == lgt_id2 {
-        lgt_status.insert(lgt_id1, 
-            LightStatus{color: init_color, counter: counter});
-        lgt_status.insert(lgt_id2, 
-            LightStatus{color: init_color, counter: counter});
-        lgt_status.insert(lgt_id3, 
-            LightStatus{color: in_color, counter: in_counter});
-        lgt_status.insert(lgt_id4, 
-            LightStatus{color: in_color, counter: in_counter});
-    } else {
-        lgt_status.insert(lgt_id1, 
-            LightStatus{color: in_color, counter: in_counter});
-        lgt_status.insert(lgt_id2, 
-            LightStatus{color: in_color, counter: in_counter});
-        lgt_status.insert(lgt_id3, 
-            LightStatus{color: init_color, counter: counter});
-        lgt_status.insert(lgt_id4, 
-            LightStatus{color: init_color, counter: counter});
+/// 根据配置计算所有灯的初始状态status
+///1. 根据lgt_id找到灯所属于的组
+///2. 更改改组的灯色
+/// 
+fn init_lgt_status(lgt_id: &str, init_color: LightColor, remain: i64, light_group: &HashMap<String, Vec<String>>){
+    {
+        let mut lgt_status = LIGHTSTATUS.lock().unwrap();
+
+        for (group_name, light_id_list) in light_group.into_iter() {
+            for light_id in light_id_list {
+                if lgt_id == light_id {
+                    // lgt_status.get(&group_name);
+                    let r_lgt_status = lgt_status.get(group_name).unwrap();
+                    r_lgt_status = &LightStatus{
+                        color: init_color,
+                        counter: remain,
+                    };
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -404,18 +396,33 @@ fn read_config(file_name: &str) -> (String, HashMap<String, Vec<String>>) {
 }
 
 //http服务，处理修改配置的请求
-async fn serve_http() -> tide::Result<()> {
+async fn serve_http(light_group: &HashMap<String, Vec<String>>) -> tide::Result<()> {
     tide::log::start();
     let mut app = tide::new();
 
     // 红绿灯规则调整
     app.at("/rule_change").post(|mut req: Request<()>| async move {
         let rule: RuleMessage = req.body_json().await?;
-        // println!("Message: {}", rule.name);
-        // 这里修改全局变量
+        // light_id: String,
+        // color: i32,
+        // remain: i64,
+        println!("Message: {}", rule.light_id);
+        let remain = rule.remain;
+        let color = rule.color;
+        let lgt_id = rule.light_id;
+        // 1 红 2 绿 3 黄 0 灭灯
+        let init_color =match color {
+            1 => LightColor::RED,
+            2 => LightColor::GREEN,
+            3 => LightColor::YELLOW,
+            0 => LightColor::UNKNOWN,
+        };
+        // 重新初始化
+        init_light_duration(color, remain);
+        // 重新初始化灯的状态
+        init_lgt_status(&lgt_id, init_color, remain, light_group);
 
-
-        //返回一个没用的response
+        // 返回一个没用的response
         let response =  Response {status: 1, message: String::from("")};
 
         Ok(Body::from_json(&response)?)
@@ -437,11 +444,11 @@ async fn main() {
     println!("{:?}{:?}", road_id, light_group);
     
     // 循环红绿灯
-    tokio::spawn(light_loop(road_id, light_group));
+    tokio::spawn(light_loop(road_id, &light_group));
 
     // 启动服务主线程自己阻塞在serve_http循环上
     use futures::executor::block_on;
-    block_on(serve_http());
+    block_on(serve_http(&light_group));
 
 }
 
