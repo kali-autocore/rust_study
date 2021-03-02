@@ -1,5 +1,3 @@
-# 红绿灯服务中心
-
 # 需求分析
 
 ## 平台功能
@@ -58,7 +56,7 @@ Tide+Zenoh
 
 ## API
 
-URL： {url}/rule_change
+URL： ip:port/rule_change
    
 描述：  红绿灯管控中心发送红绿灯变动规则
 
@@ -68,11 +66,9 @@ URL： {url}/rule_change
 |  字段   | 类型  | 描述  |
 |  ----  | ----  | ----  |
 | road_id  | string | 十字路口ID |
-| light_name1             | i32    | 红绿灯名字以及时间|
-| sn_time        | i32    | 南北方向灯剩余时间               |
-| ew             | i32    | 东西方向红绿灯状态：1 绿 2 红 3 黄|
-| ew_time        | i32    | 东西方向灯剩余时间               |
-| timestamp      | i64    | 发送消息的时间戳                |
+| light_id      | string    | 红绿灯名字|
+| remain        | i32    | 剩余时间               |
+| color         | i32    | 1 红 2 绿 3 黄 0 灭灯|
 
 响应消息：
 |  字段    | 类型    | 描述  |
@@ -86,7 +82,7 @@ Zenoh 存储 path/value
 
 path： 某路口发布的红绿灯存储path，/light/detail/{road_id}
 
-value: 该红绿灯的值，1 绿灯 2 红灯 3 黄灯
+value: 该红绿灯的值，1 红 2 绿 3 黄 0 灭灯
 
 
 
