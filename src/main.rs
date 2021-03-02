@@ -1,14 +1,8 @@
-//
-// 本程序的红绿灯适应于东南西北只有一个红绿灯，且只可直行，不可转弯
-// 1. 读取配置文件
-// 2. 根据配置文件，获取当前所有的红绿灯信息
-//      1. 所有红绿灯等的信息，并发布到zenoh中
-//      2. 南北和东西红绿灯的当前信息， 每隔1s发送一次
-//
-
 use std::fs;
 use std::time::Duration;
 use std::collections::HashMap;
+use clap::{App, Arg};
+use futures::prelude::*;
 // use async_std::task;
 use yaml_rust::{YamlLoader};
 use serde::{Deserialize, Serialize};
@@ -238,28 +232,35 @@ async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
 
     println!("New workspace...");
     let workspace = zenoh.workspace(None).await.unwrap();
+    
+    let light_path1 = format!("/light/detail/{}", road_id);
 
     //每秒tick
     loop {
         let now = Instant::now();
         {
-            let lgt_status_list = LIGHTSTATUS.lock().unwrap();
+            let mut lgt_status_list = LIGHTSTATUS.lock().unwrap();
             let lgt_duration = LIGHTDURATION.lock().unwrap();
 
-            for (group_name, lgt_status) in lgt_status_list.into_iter() {
+            for (group_name, lgt_status) in lgt_status_list.iter_mut() {
+                let light_path = format!("/light/detail/{}", road_id);
+
                 if lgt_status.tick(&lgt_duration) {
                     // 根据group_name,获取Light
-                    let light_list: &Vec<String> = light_group.get(&group_name).unwrap();
+                    let light_list: &Vec<String> = light_group.get(group_name).unwrap();
                     
                     // 更新Zenoh中的存储
-                    let mut path = "/light/detail/".to_string();
-                    path += &road_id;
-                    // let path = Selector::new(path.to_string());
-
                     // 1. 取出原有数据
-                    // let selector = path;
-                    // let lgt_now = workspace.get(&path.try_into().unwrap()).await.unwrap();
-                    // println!("{:?}", lgt_now);
+                    let mut lgt_now = workspace.get(&light_path.try_into().unwrap()).await.unwrap();
+                    while let Some(data) = lgt_now.next().await {
+                        println!(
+                            "  {} : {:?} (encoding: {} , timestamp: {})",
+                            data.path,
+                            data.value,
+                            data.value.encoding_descr(),
+                            data.timestamp
+                        )
+                    }
 
                     // 2. 更新存储的灯的详细信息
                     // path: /light/detail/{road_id}
@@ -269,9 +270,9 @@ async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
                         value = format!("{}\"{}\":\"{:?}\",", value, light_id, lgt_status.color);
                     }
                     value += &String::from("}");
-                    println!("Put Data ('{}': '{}')...\n", path, value);
+                    println!("Put Data ('{}': '{}')...\n", light_path1, value);
                     workspace.put(
-                                &path.try_into().unwrap(),
+                                &light_path.try_into().unwrap(),
                                 Value::Json(value),
                             ).await.unwrap();
                 }
@@ -283,6 +284,7 @@ async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
         // value: [{"light_id": "12", "color": 1, "remain": 5}]
 
         tokio::time::sleep_until(now.checked_add(Duration::from_secs(1)).unwrap()).await;
+
         // if light_status.tick(&LIGHTDURATION) {
             // let now = Instant::now();
             // println!("{:?}", now);
