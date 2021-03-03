@@ -1,7 +1,7 @@
+use std::thread;
 use std::fs;
 use std::time::Duration;
 use std::collections::HashMap;
-use clap::{App, Arg};
 use futures::prelude::*;
 // use async_std::task;
 use yaml_rust::{YamlLoader};
@@ -17,10 +17,10 @@ use std::convert::TryInto;
 // #[macro_use]
 extern crate lazy_static;
 use lazy_static::lazy_static;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 
 //灯的颜色枚举
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 enum LightColor {
     UNKNOWN = 0,
     GREEN = 1,
@@ -107,7 +107,8 @@ impl LightStatus {
                 LightColor::RED => (|| {
                     self.color = LightColor::GREEN;
                     self.counter = light_duration.green;
-                })()
+                })(),
+                LightColor::UNKNOWN => ()
             };
             true
         } else {
@@ -129,19 +130,24 @@ impl LightStatus {
 lazy_static! {
     // 所有灯的状态
     static ref LIGHTSTATUS:Mutex<HashMap<String, LightStatus>> = {
-        let mut lgt_status = HashMap::new();
+        let lgt_status = HashMap::new();
         Mutex::new(lgt_status)
     };
 
     // 公用的灯循环的时间配置
     static ref LIGHTDURATION:Mutex<LightDuration> = {
-        let mut lgt_drtion = LightDuration{
+        let lgt_drtion = LightDuration{
             green: 0,
             red: 0,
             yellow: 0,
             unknown: 0
         };
         Mutex::new(lgt_drtion)
+    };
+
+    static ref LIGHTGROUP: Mutex<HashMap<String, Vec<String>>> = {
+        let map = HashMap::new();
+        Mutex::new(map)
     };
 }
 
@@ -191,13 +197,14 @@ fn inverse_color(color: &LightColor, counter: i64) -> LightColor {
 // 根据配置，给LIGHTDURATION赋值
 fn init_light_duration(init_color: i32, counter: i64) {
     let color = init_color.clone();
-    let lcfg = LIGHTDURATION.lock().unwrap();
+    let mut lcfg = LIGHTDURATION.lock().unwrap();
     // 1 红 2 绿 3 黄 0 灭灯
     match color {
         2 => lcfg.green = counter,
         1 => lcfg.red = counter,
-        3=> lcfg.yellow = counter,
+        3 => lcfg.yellow = counter,
         0 => lcfg.unknown = counter,
+        _ => ()
     };
 }
 
@@ -205,19 +212,17 @@ fn init_light_duration(init_color: i32, counter: i64) {
 ///1. 根据lgt_id找到灯所属于的组
 ///2. 更改改组的灯色
 /// 
-fn init_lgt_status(lgt_id: &str, init_color: LightColor, remain: i64, light_group: &HashMap<String, Vec<String>>){
+fn init_lgt_status(lgt_id: &str, init_color: LightColor, remain: i64){
     {
         let mut lgt_status = LIGHTSTATUS.lock().unwrap();
-
-        for (group_name, light_id_list) in light_group.into_iter() {
+        let mut light_group = LIGHTGROUP.lock().unwrap();
+        for (group_name, light_id_list) in light_group.iter_mut() {
             for light_id in light_id_list {
                 if lgt_id == light_id {
                     // lgt_status.get(&group_name);
-                    let r_lgt_status = lgt_status.get(group_name).unwrap();
-                    r_lgt_status = &LightStatus{
-                        color: init_color,
-                        counter: remain,
-                    };
+                    let mut r_lgt_status = lgt_status.get_mut(&group_name[..]).unwrap();
+                    r_lgt_status.color = init_color;
+                    r_lgt_status.counter = remain;
                     break;
                 }
             }
@@ -226,14 +231,14 @@ fn init_lgt_status(lgt_id: &str, init_color: LightColor, remain: i64, light_grou
 }
 
 
-async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
+async fn light_loop(road_id: String) {
     let config = Properties::default();
     let zenoh = Zenoh::new(config.into()).await.unwrap();
 
     println!("New workspace...");
     let workspace = zenoh.workspace(None).await.unwrap();
-    
-    let light_path1 = format!("/light/detail/{}", road_id);
+    let light_path = format!("/light/detail/{}", road_id);
+    let lgt_path: String = light_path.try_into().unwrap();
 
     //每秒tick
     loop {
@@ -241,17 +246,17 @@ async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
         {
             let mut lgt_status_list = LIGHTSTATUS.lock().unwrap();
             let lgt_duration = LIGHTDURATION.lock().unwrap();
+            let light_group = LIGHTGROUP.lock().unwrap();
+            let light_path = "/light/detail".to_string();
 
             for (group_name, lgt_status) in lgt_status_list.iter_mut() {
-                let light_path = format!("/light/detail/{}", road_id);
-
                 if lgt_status.tick(&lgt_duration) {
                     // 根据group_name,获取Light
                     let light_list: &Vec<String> = light_group.get(group_name).unwrap();
                     
                     // 更新Zenoh中的存储
                     // 1. 取出原有数据
-                    let mut lgt_now = workspace.get(&light_path.try_into().unwrap()).await.unwrap();
+                    let mut lgt_now = workspace.get(&light_path.clone().try_into().unwrap()).await.unwrap();
                     while let Some(data) = lgt_now.next().await {
                         println!(
                             "  {} : {:?} (encoding: {} , timestamp: {})",
@@ -270,11 +275,8 @@ async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
                         value = format!("{}\"{}\":\"{:?}\",", value, light_id, lgt_status.color);
                     }
                     value += &String::from("}");
-                    println!("Put Data ('{}': '{}')...\n", light_path1, value);
-                    workspace.put(
-                                &light_path.try_into().unwrap(),
-                                Value::Json(value),
-                            ).await.unwrap();
+                    println!("Put Data ('{}': '{}')...\n", light_path, value);
+                    workspace.put(&light_path.clone().try_into().unwrap(), Value::Json(value)).await.unwrap();
                 }
             }
         }
@@ -346,7 +348,7 @@ async fn light_loop(road_id: String, light_group:HashMap<String, Vec<String>>) {
 }
 
 
-fn read_config(file_name: &str) -> (String, HashMap<String, Vec<String>>) {
+fn read_config(file_name: &str) -> String {
     let config_str = fs::read_to_string(file_name).unwrap();
     let config_docs = YamlLoader::load_from_str(config_str.as_str()).unwrap();
     let config = &config_docs[0];
@@ -354,7 +356,7 @@ fn read_config(file_name: &str) -> (String, HashMap<String, Vec<String>>) {
     let road_id =  String::from(config["road_id"].as_str().unwrap());
 
     // 读取灯的变化时间
-    let light_duration = LIGHTDURATION.lock().unwrap();
+    let mut light_duration = LIGHTDURATION.lock().unwrap();
     light_duration.green = config["duration"]["green"].as_i64().unwrap();
     light_duration.red = config["duration"]["red"].as_i64().unwrap();
     light_duration.yellow = config["duration"]["yellow"].as_i64().unwrap();
@@ -374,7 +376,7 @@ fn read_config(file_name: &str) -> (String, HashMap<String, Vec<String>>) {
     // 红绿灯组
     let group_master = config["master"].as_str().unwrap();
     let mut lgt_status_group_hash = LIGHTSTATUS.lock().unwrap();
-    let mut light_group:HashMap<String, Vec<String>> = HashMap::new();
+    let mut light_group = LIGHTGROUP.lock().unwrap();
 
     // 读取配置中的红绿灯组
     for (group_name, lgt_id_list) in light_group_cfg.as_hash().unwrap().into_iter() {
@@ -383,7 +385,7 @@ fn read_config(file_name: &str) -> (String, HashMap<String, Vec<String>>) {
         for lgt_id in lgt_id_list.as_vec().unwrap() {
             g_id_list.push(String::from(lgt_id.as_str().unwrap()));
         }
-        light_group.insert(group_name, g_id_list);
+        light_group.insert(group_name.clone(), g_id_list);
 
         // 初始化LIGHTSTATUS
         if group_name == group_master {
@@ -394,11 +396,11 @@ fn read_config(file_name: &str) -> (String, HashMap<String, Vec<String>>) {
             lgt_status_group_hash.insert(group_name, LightStatus{color: in_color, counter: in_duration});
         }
     }
-    (road_id, light_group)
+    road_id
 }
 
 //http服务，处理修改配置的请求
-async fn serve_http(light_group: &HashMap<String, Vec<String>>) -> tide::Result<()> {
+async fn serve_http() -> tide::Result<()> {
     tide::log::start();
     let mut app = tide::new();
 
@@ -418,11 +420,12 @@ async fn serve_http(light_group: &HashMap<String, Vec<String>>) -> tide::Result<
             2 => LightColor::GREEN,
             3 => LightColor::YELLOW,
             0 => LightColor::UNKNOWN,
+            _ => LightColor::UNKNOWN,
         };
         // 重新初始化
         init_light_duration(color, remain);
         // 重新初始化灯的状态
-        init_lgt_status(&lgt_id, init_color, remain, light_group);
+        init_lgt_status(&lgt_id, init_color, remain);
 
         // 返回一个没用的response
         let response =  Response {status: 1, message: String::from("")};
@@ -436,21 +439,28 @@ async fn serve_http(light_group: &HashMap<String, Vec<String>>) -> tide::Result<
 }
 
 
-
-
 #[tokio::main]
 async fn main() {
     // 1. 读取配置文件
     let f = String::from("/home/duan/study/src/default.yaml");
-    let (road_id, light_group) = read_config(&f);
+    let road_id = read_config(&f);
+    let light_group = LIGHTGROUP.lock().unwrap();
     println!("{:?}{:?}", road_id, light_group);
-    
+ 
     // 循环红绿灯
-    tokio::spawn(light_loop(road_id, &light_group));
+    // tokio::spawn(async {
+    //     // Force the `Rc` to stay in a scope with no `.await`
+    //     {
+    //         light_loop(road_id);
+    //     }
+
+    //     task::yield_now().await;
+    // });
+    tokio::spawn(light_loop(road_id));
 
     // 启动服务主线程自己阻塞在serve_http循环上
     use futures::executor::block_on;
-    block_on(serve_http(&light_group));
+    block_on(serve_http());
 
 }
 
