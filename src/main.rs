@@ -1,5 +1,6 @@
 use std::thread;
 use std::fs;
+use std::rc::Rc;
 use std::time::Duration;
 use std::collections::HashMap;
 use futures::prelude::*;
@@ -154,14 +155,19 @@ lazy_static! {
 
 // 根据灯色获取时长
 fn get_duration(color: &LightColor) -> i64{
-    let lcfg = LIGHTDURATION.lock().unwrap();
-    match color {
-        &LightColor::RED => lcfg.red,
-        &LightColor::GREEN => lcfg.green,
-        &LightColor::YELLOW => lcfg.yellow,
-        &LightColor::UNKNOWN => lcfg.unknown,
-        _ => lcfg.unknown,
+    println!("31");
+    {
+        let lcfg = LIGHTDURATION.lock().unwrap();
+        println!("32");
+        match color {
+            &LightColor::RED => lcfg.red,
+            &LightColor::GREEN => lcfg.green,
+            &LightColor::YELLOW => lcfg.yellow,
+            &LightColor::UNKNOWN => lcfg.unknown,
+            _ => lcfg.unknown,
+        }
     }
+    
 }
 
 // 获取相反的灯色
@@ -238,7 +244,6 @@ async fn light_loop(road_id: String) {
     println!("New workspace...");
     let workspace = zenoh.workspace(None).await.unwrap();
     let light_path = format!("/light/detail/{}", road_id);
-    let lgt_path: String = light_path.try_into().unwrap();
 
     //每秒tick
     loop {
@@ -247,7 +252,6 @@ async fn light_loop(road_id: String) {
             let mut lgt_status_list = LIGHTSTATUS.lock().unwrap();
             let lgt_duration = LIGHTDURATION.lock().unwrap();
             let light_group = LIGHTGROUP.lock().unwrap();
-            let light_path = "/light/detail".to_string();
 
             for (group_name, lgt_status) in lgt_status_list.iter_mut() {
                 if lgt_status.tick(&lgt_duration) {
@@ -286,62 +290,6 @@ async fn light_loop(road_id: String) {
         // value: [{"light_id": "12", "color": 1, "remain": 5}]
 
         tokio::time::sleep_until(now.checked_add(Duration::from_secs(1)).unwrap()).await;
-
-        // if light_status.tick(&LIGHTDURATION) {
-            // let now = Instant::now();
-            // println!("{:?}", now);
-            // // 如果灯有变化，计算所有灯的信息，并将信息发布到zenoh
-            // // 发布信息分为2部分，1： 所有灯的具体信息 2： 发送给控制台的红绿灯信息
-            // // 1. 计算其他红绿灯信息
-            // let mut is_change = false;
-            // if light_status.counter == 3 {
-            //     is_change = true;
-            // }
-            // let color = &light_status.color;
-            // println!("{:?}", color);
-
-            // let light_info = cal_light_info(&light_hash, &master, &color, &groups, &is_change);
-            // println!("{:?}", light_info);
-            // 2. 信息发送到zenoh
-            // pub_light2(&workspace, String::from("road"), &light_info).await;
-            
-            // let path = format!("/light/detail/{}", road_id);
-            // let mut value = String::from("{");
-            // for light in light_info.iter() {
-            //     value = format!("{}\"{}\":\"{:?}\",", value, light.id.to_string(), light.color);
-
-            // }
-            // value += &String::from("}");
-            // println!("Put Data ('{}': '{}')...\n", path, value);
-            // // Value::Json(r#"{"kind"="memory"}"#.to_string()),
-            // workspace.put(
-            //             &path.try_into().unwrap(),
-            //             Value::Json(value),
-            //         ).await.unwrap();
-
-
-            // 3. 发布方位红绿灯信息到zenoh
-            // pub_light3(String::from("road"), &light_info).await;
-            // let path = format!("/light/state/{}", road_id);
-            // let mut value = String::from("{");
-            // for light in light_info.iter() {
-            //     value = format!("{}\"{}\":\"{:?}\",", value, light.name.to_string(), light.color);
-
-            // }
-            // value += &String::from("}");
-            // println!("Put Data ('{}': '{}')...\n", path, value);
-            // Value::Json(r#"{"kind"="memory"}"#.to_string()),
-            // workspace.put(
-            //             &path.try_into().unwrap(),
-            //             Value::Json(value),
-            //         ).await.unwrap();
-            // //http通知，这里通知自己
-            // let mut url = "http://127.0.0.1:8080/show/".to_owned();
-            // url.push_str(light_status.desc());
-            // //这里使用异步的reqwest库
-            // let body = reqwest::get(&url[..]).await;
-        // }
-        //注意这个sleep是异步的，不影响其它操作
         
     }
     // zenoh.close().await.unwrap();
@@ -354,14 +302,14 @@ fn read_config(file_name: &str) -> String {
     let config = &config_docs[0];
     let light_group_cfg = &config["light_id_group"];
     let road_id =  String::from(config["road_id"].as_str().unwrap());
-
+    println!("1");
     // 读取灯的变化时间
     let mut light_duration = LIGHTDURATION.lock().unwrap();
     light_duration.green = config["duration"]["green"].as_i64().unwrap();
     light_duration.red = config["duration"]["red"].as_i64().unwrap();
     light_duration.yellow = config["duration"]["yellow"].as_i64().unwrap();
     light_duration.unknown = config["duration"]["unknown"].as_i64().unwrap();
-
+    println!("2");
     // 读取配置中的红绿灯颜色
     let default_color:LightColor;
     match config["color"].as_i64().unwrap() {
@@ -369,15 +317,16 @@ fn read_config(file_name: &str) -> String {
         2 => default_color = LightColor::GREEN,
         3 => default_color = LightColor::YELLOW,
         0 => default_color = LightColor::UNKNOWN,
-        _ => default_color = LightColor::RED,
+        _ => default_color = LightColor::UNKNOWN,
     }
+    println!("3");
     let init_duration = get_duration(&default_color);
 
     // 红绿灯组
     let group_master = config["master"].as_str().unwrap();
     let mut lgt_status_group_hash = LIGHTSTATUS.lock().unwrap();
     let mut light_group = LIGHTGROUP.lock().unwrap();
-
+    println!("4");
     // 读取配置中的红绿灯组
     for (group_name, lgt_id_list) in light_group_cfg.as_hash().unwrap().into_iter() {
         let group_name = String::from(group_name.as_str().unwrap());
@@ -396,6 +345,7 @@ fn read_config(file_name: &str) -> String {
             lgt_status_group_hash.insert(group_name, LightStatus{color: in_color, counter: in_duration});
         }
     }
+    println!("5");
     road_id
 }
 
@@ -404,6 +354,8 @@ async fn serve_http() -> tide::Result<()> {
     tide::log::start();
     let mut app = tide::new();
 
+    app.at("/").get(|_| async { Ok("Root") });
+    
     // 红绿灯规则调整
     app.at("/rule_change").post(|mut req: Request<()>| async move {
         let rule: RuleMessage = req.body_json().await?;
@@ -434,33 +386,122 @@ async fn serve_http() -> tide::Result<()> {
     });
 
     //http server启动
+    println!("start server");
     app.listen("127.0.0.1:8080").await?;
     Ok(())
 }
 
 
-#[tokio::main]
-async fn main() {
-    // 1. 读取配置文件
+// #[tokio::main]
+// async fn main() {
+//     // 1. 读取配置文件
+//     let f = String::from("/home/duan/study/src/default.yaml");
+//     let road_id = read_config(&f);
+//     let light_group = LIGHTGROUP.lock().unwrap();
+//     println!("{:?}{:?}", road_id, light_group);
+//     serve_http();
+//     // tokio::spawn(light_loop(road_id));
+    
+//     // 启动服务主线程自己阻塞在serve_http循环上
+//     // use futures::executor::block_on;
+//     // block_on(serve_http());
+
+//     // 循环红绿灯
+//     // tokio::spawn(async {
+//     //     // Force the `Rc` to stay in a scope with no `.await`
+//     //     {
+//     //         light_loop(road_id).await;
+//     //         use futures::executor::block_on;
+//     //         block_on(serve_http());
+//     //     }
+
+//     //     task::yield_now().await;
+//     // });
+//     // tokio::spawn(
+//     //     async move {
+//     //         // Process each socket concurrently.
+//     //         light_loop(road_id).await
+//     //     }
+//     // );
+//     // let unsend_data = Rc::new("my unsend data...");
+//     // let local = task::LocalSet::new();
+//     // local.run_until(async move {
+//     //     // let unsend_data = unsend_data.clone();
+//     //     // `spawn_local` ensures that the future is spawned on the local
+//     //     // task set.
+//     //     task::spawn_local(async move {
+//     //         // println!("{}", unsend_data);
+//     //         light_loop(road_id)
+//     //         // ...
+//     //     }).await.unwrap();
+//     // }).await;
+
+    
+//     // let unsend_data = Rc::new("my unsend data...");
+
+//     // // Construct a local task set that can run `!Send` futures.
+//     // let local = task::LocalSet::new();
+
+//     // // Run the local task set.
+//     // local.run_until(async move {
+//     //     let unsend_data = unsend_data.clone();
+//     //     // `spawn_local` ensures that the future is spawned on the local
+//     //     // task set.
+//     //     task::spawn_local(async move {
+//     //         println!("{}", unsend_data);
+//     //         // ...
+//     //     }).await.unwrap();
+//     // }).await;
+    
+
+
+// }
+
+#[async_std::main]
+async fn main() -> Result<(), std::io::Error> {
     let f = String::from("/home/duan/study/src/default.yaml");
     let road_id = read_config(&f);
-    let light_group = LIGHTGROUP.lock().unwrap();
-    println!("{:?}{:?}", road_id, light_group);
- 
-    // 循环红绿灯
-    // tokio::spawn(async {
-    //     // Force the `Rc` to stay in a scope with no `.await`
-    //     {
-    //         light_loop(road_id);
-    //     }
+    // {
+    //     let light_group = LIGHTGROUP.lock().unwrap();
+    //     println!("{:?}", light_group);
+    // }
+    
+    // tide::log::start();
+    // let mut app = tide::new();
 
-    //     task::yield_now().await;
+    // app.at("/").get(|_| async { Ok("Root") });
+    
+    // // 红绿灯规则调整
+    // app.at("/rule_change").post(|mut req: Request<()>| async move {
+    //     let rule: RuleMessage = req.body_json().await?;
+    //     // light_id: String,
+    //     // color: i32,
+    //     // remain: i64,
+    //     println!("Message: {}", rule.light_id);
+    //     let remain = rule.remain;
+    //     let color = rule.color;
+    //     let lgt_id = rule.light_id;
+    //     // 1 红 2 绿 3 黄 0 灭灯
+    //     let init_color =match color {
+    //         1 => LightColor::RED,
+    //         2 => LightColor::GREEN,
+    //         3 => LightColor::YELLOW,
+    //         0 => LightColor::UNKNOWN,
+    //         _ => LightColor::UNKNOWN,
+    //     };
+    //     // 重新初始化
+    //     init_light_duration(color, remain);
+    //     // 重新初始化灯的状态
+    //     init_lgt_status(&lgt_id, init_color, remain);
+
+    //     // 返回一个没用的response
+    //     let response =  Response {status: 1, message: String::from("")};
+
+    //     Ok(Body::from_json(&response)?)
     // });
-    tokio::spawn(light_loop(road_id));
 
-    // 启动服务主线程自己阻塞在serve_http循环上
-    use futures::executor::block_on;
-    block_on(serve_http());
-
+    // //http server启动
+    // println!("start server");
+    // app.listen("127.0.0.1:8080").await?;
+    Ok(())
 }
-
