@@ -31,6 +31,7 @@ enum LightColor {
 struct Light {
     id: String,
     color: LightColor,
+    remain: i64
 }
 
 #[derive(Debug, Clone)]
@@ -52,24 +53,6 @@ struct RuleMessage {
 struct Response {
     status: i32,
     message: String,
-}
-
-
-#[derive(Debug, Clone)]
-struct Config {
-    road_id: String,
-    master: String,
-    init_color: LightColor,
-    groups: Vec<[String;2]>,
-    light_duration: LightDuration
-}
-
-#[derive(Debug, Clone)]
-struct ControlInfo {
-    road_id: String,
-    light_name: String,
-    light_color: LightColor,
-    duration: i64,
 }
 
 // 主灯的状态，包括当前颜色，和倒计时
@@ -95,14 +78,7 @@ impl LightStatus {
     fn tick(&mut self, light_duration: &LightDuration) -> bool {
         println!("{:?}",self.counter);
         self.counter -= 1;
-        if self.counter == 3 {
-            match self.color {
-                LightColor::RED => (|| {
-                    true
-                })(),
-                _ => false
-            }
-        } else if self.counter == 0 {
+        if self.counter == 0 {
             match self.color {
                 LightColor::GREEN => (|| {
                     self.color = LightColor::YELLOW;
@@ -204,6 +180,7 @@ fn init_light_duration(init_color: i32, counter: i64) {
         0 => lcfg.unknown = counter,
         _ => ()
     };
+    println!("{:?}", lcfg);
 }
 
 /// 根据配置计算所有灯的初始状态status
@@ -229,7 +206,7 @@ fn init_lgt_status(lgt_id: &str, init_color: LightColor, remain: i64){
 }
 
 
-async fn light_loop(road_id: String, lgt_id_list: &Vec<String>) {
+async fn light_loop(road_id: String) {
     let config = Properties::default();
     let zenoh = Zenoh::new(config.into()).await.unwrap();
 
@@ -237,28 +214,28 @@ async fn light_loop(road_id: String, lgt_id_list: &Vec<String>) {
     let workspace = zenoh.workspace(None).await.unwrap();
     let light_path = format!("/light/detail/{}", road_id);
 
-    let mut light_list_now: Vec<Light> = Vec::new();
-
-    // // 初始化zenoh中灯的状态
+    // 初始化zenoh中灯的状态，按组存
     {
         let lgt_status_list = LIGHTSTATUS.lock().unwrap();
-        let lgt_duration = LIGHTDURATION.lock().unwrap();
         let mut light_group = LIGHTGROUP.lock().unwrap();
 
-        for (group_name, light_id_list) in light_group.iter_mut() {
-            let lgt_color = lgt_status_list.get(group_name).unwrap();
-            for lgt_id in light_id_list {
-                let id = lgt_id.clone();
-                light_list_now.push(Light{id: id, color:lgt_color.color.clone()});
-            }
-        }
-    }
-
-    // 初始化zenoh
-    if !light_list_now.is_empty() {
         let mut value = String::from("{");
-        for light in light_list_now {
-            value = format!("{}\"{}\":{:?},", value, light.id, light.color as u64);
+        for (group_name, light_id_list) in light_group.iter_mut() {
+            value = format!(r#"{}"{}":["#, value, group_name);
+                
+            let lgt_color = lgt_status_list.get(group_name).unwrap();
+            let duration:i64 = lgt_status_list.get(group_name).unwrap().counter;
+            for lgt_id in light_id_list {
+                value += &String::from("{");
+                let id = lgt_id.clone();
+                let color:LightColor = lgt_color.color.clone();
+                value = format!(r#"{}"id":"{}","color":{:?},"remain":{:?}"#, value, id, color as u64, duration);
+                value += &String::from("},");
+            }
+            let value_len = value.len()-1;
+            value.remove(value_len);
+            value += &String::from("],");
+            
         }
         let value_len = value.len()-1;
         value.remove(value_len);
@@ -266,113 +243,59 @@ async fn light_loop(road_id: String, lgt_id_list: &Vec<String>) {
         println!("Put Data ('{}': '{}')...\n", light_path, value);
         workspace.put(&light_path.clone().try_into().unwrap(), zenoh::Value::Json(value)).await.unwrap();
     }
-
+    
     //每秒tick
     loop {
         let now = Instant::now();
+        let mut value_new = String::from("{");
+
         {
-            let mut lgt_status_list = LIGHTSTATUS.lock().unwrap();
-            let lgt_duration = LIGHTDURATION.lock().unwrap();
+            let mut lgt_status_hash = LIGHTSTATUS.lock().unwrap();
             let mut light_group = LIGHTGROUP.lock().unwrap();
-            
+            let lgt_duration = LIGHTDURATION.lock().unwrap();
 
-            let mut light_list: Vec<Light> = Vec::new();
 
-            for (group_name, lgt_status) in lgt_status_list.iter_mut() {
-                if lgt_status.tick(&lgt_duration) {
+            for (group_name, lgt_id_vec) in light_group.iter_mut() {
+                value_new = format!(r#"{}"{}":["#, value_new, group_name);
+                // 1. 取出group中的值，为每个灯的剩余时间减一
+                // 获取灯的状态
+                let lgt_status = lgt_status_hash.get_mut(group_name).unwrap();
+                lgt_status.tick(&lgt_duration);
+                let color = lgt_status.color;
+                let remain = lgt_status.counter;
 
-                    // 根据group_name,获取Light
-                    let light_id_list_now = light_group.get(group_name).unwrap();
-                    println!("{:?}", light_id_list_now);
-                    for (g, l) in light_group.iter_mut() {
-                        println!("{:?}", l);
-                    }
-
-                    // // 更新Zenoh中的存储
-                    // 1. 取出原有数据
-                    let mut lgt_now = workspace.get(&light_path.clone().try_into().unwrap()).await.unwrap();
-                    while let Some(data) = lgt_now.next().await {
-                        // Data { path: Path { p: "/light/detail/1111111" }, value: Json("{\"3\":\"RED\",\"4\":\"RED\",}"), timestamp: 603f27c1d4362790/9679372789864994B044C9B9FE82FB4B } 
-                        let data: &str = &data.value.clone().encode_to_string().2.to_owned();
-                        let lgt_value: Value = serde_json::from_str(data).unwrap();
-                        println!("{:?}", lgt_value);
-                        println!("{:?}", lgt_value["light_1"]);
-                        // {
-                        //     let mut light_group = LIGHTGROUP.lock().unwrap();
-                        //     for (g_name, lgt_id_vec) in light_group.iter_mut(){
-                        //         if lgt_id_vec == light_id_list_now {
-                        //             for lgt_id in lgt_id_vec {
-                        //                 light_list.push(Light{id: lgt_id.clone(), color: lgt_status.color});
-                        //             }
-                        //         } else {
-                        //             println!("{:?}", lgt_id_vec);
-                        //             for lgt_id in lgt_id_vec {
-                        //             //     let lgt_color = &lgt_value[&lgt_id];
-                        //             //     let color: LightColor = get_color(&lgt_color.as_u64().unwrap());
-                        //             //     light_list.push(Light{id: lgt_id.clone(), color: color});
-                        //             }
-                        //         }
-                                    
-                        //     }
-                        // }
-                        
-                    
-
-                    // for lgt_id in lgt_id_list {  // 循环所有的light id
-                    //     let lgt_color = &lgt_value[lgt_id];
-                    //     // println!("{:?}", lgt_color);
-                    //     // println!("{:?}", lgt_color.is_u64());
-                    //     for lgt_id_now in light_id_list_now {  // 循环当前变化的灯的id
-                    //         if lgt_id == lgt_id_now {
-                    //             // 更换该灯的颜色
-                    //             light_list.push(Light{id: lgt_id.clone(), color: lgt_status.color});
-                    //             continue;
-                    //         }
-                    //     }
-                    //     // 存储剩下的灯颜色
-                    //     let color: LightColor = get_color(&lgt_color.as_u64().unwrap());
-                    //     light_list.push(Light{id: lgt_id.clone(), color: color});
-                    // }
-                    
-                    }
-
-                    // 2. 更新存储的灯的详细信息
-                    // path: /light/detail/{road_id}
-                    // value: {"id_1": 1, "id_2": 1, "id_3": 2, "id_4": 2,}  light_id: color
-                    let lgt_list_temp = light_list.clone();
-                    if !lgt_list_temp.is_empty() {
-                        let mut value = String::from("{");
-                        for light in lgt_list_temp {
-                            value = format!("{}\"{}\":{:?},", value, light.id, light.color as u64);
-                        }
-                        let value_len = value.len()-1;
-                        value.remove(value_len);
-                        value += &String::from("}");
-                        println!("Put Data ('{}': '{}')...\n", light_path, value);
-                        workspace.put(&light_path.clone().try_into().unwrap(), zenoh::Value::Json(value)).await.unwrap();
-                    }
-                    
+                // 循环ID，存入每一个红绿灯信息
+                for lgt_id in lgt_id_vec {
+                    value_new += &String::from("{");
+                    let id = lgt_id.clone();
+                    value_new = format!(r#"{}"id":"{}","color":{:?},"remain":{:?}"#, value_new, id, color as u64, remain);
+                    value_new += &String::from("},");
                 }
+                let value_len = value_new.len()-1;
+                value_new.remove(value_len);
+                value_new += &String::from("],");
             }
         }
-        
-        // 2. 更新存储的灯的剩余时间
-        // path: /road_id/left
-        // value: [{"light_id": "12", "color": 1, "remain": 5}]
 
+        let value_len = value_new.len()-1;
+        value_new.remove(value_len);
+        value_new += &String::from("}");
+        println!("Put Data ('{}': '{}')...\n", light_path, value_new);
+        workspace.put(&light_path.clone().try_into().unwrap(), zenoh::Value::Json(value_new)).await.unwrap();
+    
         tokio::time::sleep_until(now.checked_add(Duration::from_secs(1)).unwrap()).await;
         
     }
 }
 
 
-fn read_config(file_name: &str) -> (String, Vec<String>) {
+fn read_config(file_name: &str) -> (String, String) {
     let config_str = fs::read_to_string(file_name).unwrap();
     let config_docs = YamlLoader::load_from_str(config_str.as_str()).unwrap();
     let config = &config_docs[0];
     let light_group_cfg = &config["light_id_group"];
     let road_id =  String::from(config["road_id"].as_str().unwrap());
-    let mut light_id_list_ret = Vec::new();
+    let cv_url =  String::from(config["cv_url"].as_str().unwrap());
 
     // 读取灯的变化时间
     {
@@ -406,8 +329,6 @@ fn read_config(file_name: &str) -> (String, Vec<String>) {
             let mut g_id_list = vec![];
             for lgt_id in lgt_id_list.as_vec().unwrap() {
                 g_id_list.push(String::from(lgt_id.as_str().unwrap()));
-                // 获取所有的灯ID
-                light_id_list_ret.push(String::from(lgt_id.as_str().unwrap()));
             }
             light_group.insert(group_name.clone(), g_id_list);
 
@@ -416,17 +337,17 @@ fn read_config(file_name: &str) -> (String, Vec<String>) {
                 lgt_status_group_hash.insert(group_name, LightStatus{color: default_color, counter: init_duration});
             } else {
                 let in_color = inverse_color(&default_color, init_duration);
-                let in_duration = get_duration(&default_color);
+                let in_duration = get_duration(&in_color);
                 lgt_status_group_hash.insert(group_name, LightStatus{color: in_color, counter: in_duration});
             }
-
-            
         }
 
     }
     
-    (road_id, light_id_list_ret)
+    (road_id, cv_url)
 }
+
+
 
 //http服务，处理修改配置的请求
 async fn serve_http() -> tide::Result<()> {
@@ -441,7 +362,7 @@ async fn serve_http() -> tide::Result<()> {
         // light_id: String,
         // color: i32,
         // remain: i64,
-        println!("Message: {}", rule.light_id);
+        println!("Message: light_id: {}, color: {}, remain: {}", rule.light_id, rule.color, rule.remain);
         let remain = rule.remain;
         let color = rule.color;
         let lgt_id = rule.light_id;
@@ -466,19 +387,99 @@ async fn serve_http() -> tide::Result<()> {
 
     //http server启动
     println!("start server");
-    app.listen("127.0.0.1:8080").await?;
+    app.listen("0.0.0.0:8080").await?;
     Ok(())
 }
+
+// 1s发送一次红绿灯结果
+async fn send(road_id:String, cv_url: String) {
+    let config = Properties::default();
+    let zenoh = Zenoh::new(config.into()).await.unwrap();
+
+    println!("New workspace...");
+    let workspace = zenoh.workspace(None).await.unwrap();
+    let light_path = format!("/light/detail/{}", road_id);
+    loop {
+        let now = Instant::now();
+
+        // 1. 取出原有数据，需要更新时间
+        let mut lgt_now = workspace.get(&light_path.clone().try_into().unwrap()).await.unwrap();
+        let mut lgt_info_json:Vec<Value> = Vec::new();
+
+        while let Some(data) = lgt_now.next().await {
+            let data: &str = &data.value.clone().encode_to_string().2.to_owned();
+            // 按组来的灯的信息
+            let lgt_info_obj: Value = serde_json::from_str(data).unwrap();
+            // Object({"group2": Array([Object({"id": String("light_3"), "color": Number(2), "remain": Number(5)}), Object({"id": String("light_4"), "color": Number(2), "remain": Number(5)})]), "group1": Array([Object({"id": String("light_1"), "color": Number(1), "remain": Number(6)}), Object({"id": String("light_2"), "color": Number(1), "remain": Number(6)})])})
+            {
+                let mut light_group = LIGHTGROUP.lock().unwrap();
+                for (group_name, _) in light_group.iter_mut() {
+                    // Array([Object({"id": String("light_3"), "color": Number(1), "remain": Number(6)}), Object({"id": String("light_4"), "color": Number(1), "remain": Number(6)})])
+                    // println!("asdfasdf {:?}", lgt_info_obj[group_name]);
+                    let lgt_info: &Vec<Value> = &lgt_info_obj[group_name].as_array().unwrap();
+                    for lgt in lgt_info {
+                        // println!("asdfasdf {:?}", lgt);
+                        lgt_info_json.push(lgt.clone());
+
+                    }
+                }
+            }
+        }
+        println!("{:#?}", serde_json::json!({
+            "road_id": road_id,
+            "lgt_info": lgt_info_json,
+        }));
+        // let echo_json: serde_json::Value = reqwest::Client::new()
+        // .post(&cv_url)
+        // .json(&serde_json::json!({
+        //     "road_id": road_id,
+        //     "lgt_info": lgt_info_json,
+        // }))
+        // .send()
+        // .await.unwrap()
+        // .json()
+        // .await.unwrap();
+        // println!("{:#?}", echo_json);
+        tokio::time::sleep_until(now.checked_add(Duration::from_secs(1)).unwrap()).await;
+    }
+    
+
+    
+
+    // println!("{:#?}", echo_json);
+    // Object(
+    //     {
+    //         "body": String(
+    //             "https://docs.rs/reqwest"
+    //         ),
+    //         "id": Number(
+    //             101
+    //         ),
+    //         "title": String(
+    //             "Reqwest.rs"
+    //         ),
+    //         "userId": Number(
+    //             1
+    //         )
+    //     }
+    // )
+    // Ok(())
+
+}
+
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     let f = String::from("/home/duan/study/src/default.yaml");
-    let (road_id, lgt_id_list) = read_config(&f);
-    {
-        let light_group = LIGHTGROUP.lock().unwrap();
-        println!("{:?}", light_group);
-    }
+    let (road_id, cv_url) = read_config(&f);
+    
     tokio::spawn(serve_http());
-    light_loop(road_id, &lgt_id_list).await;
+
+    // 一秒一次请求
+    tokio::spawn(send(road_id.clone(), cv_url.clone()));
+    // send(road_id.clone(), &cv_url).await;
+    
+    light_loop(road_id).await;
+    
     Ok(())
 }
