@@ -2,17 +2,15 @@ use std::fs;
 use std::time::Duration;
 use std::collections::HashMap;
 use futures::prelude::*;
+// use futures::select;
 // use async_std::task;
 use yaml_rust::{YamlLoader};
 use serde::{Deserialize, Serialize};
-// use tide::prelude::*; // Pulls in the json! macro.
 use tide::{Body, Request};
 use zenoh::*;
 use tokio;
 use tokio::time::Instant;
 use std::convert::TryInto;
-// use lazy_static;
-// #[macro_use]
 extern crate lazy_static;
 use lazy_static::lazy_static;
 use std::sync::{Mutex};
@@ -30,7 +28,7 @@ enum LightColor {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 struct Light {
     id: String,
-    color: LightColor,
+    color: u64,
     remain: i64
 }
 
@@ -62,15 +60,6 @@ struct LightStatus {
     counter: i64,
 }
 
-fn get_color(color: &u64) -> LightColor {
-    match color {
-        1 => LightColor::RED,
-        2 => LightColor::GREEN,
-        3 => LightColor::YELLOW,
-        0 => LightColor::UNKNOWN,
-        _ => LightColor::UNKNOWN
-    }
-}
 
 // 灯状态的实现
 impl LightStatus {
@@ -206,54 +195,25 @@ fn init_lgt_status(lgt_id: &str, init_color: LightColor, remain: i64){
 }
 
 
-async fn light_loop(road_id: String) {
+// 循环灯状态
+async fn light_loop(road_id: String, zenoh_url: String) {
     let config = Properties::default();
     let zenoh = Zenoh::new(config.into()).await.unwrap();
 
     println!("New workspace...");
     let workspace = zenoh.workspace(None).await.unwrap();
     let light_path = format!("/light/detail/{}", road_id);
-
-    // 初始化zenoh中灯的状态，按组存
-    {
-        let lgt_status_list = LIGHTSTATUS.lock().unwrap();
-        let mut light_group = LIGHTGROUP.lock().unwrap();
-
-        let mut value = String::from("{");
-        for (group_name, light_id_list) in light_group.iter_mut() {
-            value = format!(r#"{}"{}":["#, value, group_name);
-                
-            let lgt_color = lgt_status_list.get(group_name).unwrap();
-            let duration:i64 = lgt_status_list.get(group_name).unwrap().counter;
-            for lgt_id in light_id_list {
-                value += &String::from("{");
-                let id = lgt_id.clone();
-                let color:LightColor = lgt_color.color.clone();
-                value = format!(r#"{}"id":"{}","color":{:?},"remain":{:?}"#, value, id, color as u64, duration);
-                value += &String::from("},");
-            }
-            let value_len = value.len()-1;
-            value.remove(value_len);
-            value += &String::from("],");
-            
-        }
-        let value_len = value.len()-1;
-        value.remove(value_len);
-        value += &String::from("}");
-        println!("Put Data ('{}': '{}')...\n", light_path, value);
-        workspace.put(&light_path.clone().try_into().unwrap(), zenoh::Value::Json(value)).await.unwrap();
-    }
     
     //每秒tick
     loop {
         let now = Instant::now();
+        let mut light_vec: Vec<Light> = vec![];
         let mut value_new = String::from("{");
 
         {
             let mut lgt_status_hash = LIGHTSTATUS.lock().unwrap();
             let mut light_group = LIGHTGROUP.lock().unwrap();
             let lgt_duration = LIGHTDURATION.lock().unwrap();
-
 
             for (group_name, lgt_id_vec) in light_group.iter_mut() {
                 value_new = format!(r#"{}"{}":["#, value_new, group_name);
@@ -270,6 +230,7 @@ async fn light_loop(road_id: String) {
                     let id = lgt_id.clone();
                     value_new = format!(r#"{}"id":"{}","color":{:?},"remain":{:?}"#, value_new, id, color as u64, remain);
                     value_new += &String::from("},");
+                    light_vec.push(Light{id: id, color: color as u64, remain: remain});
                 }
                 let value_len = value_new.len()-1;
                 value_new.remove(value_len);
@@ -280,9 +241,12 @@ async fn light_loop(road_id: String) {
         let value_len = value_new.len()-1;
         value_new.remove(value_len);
         value_new += &String::from("}");
-        println!("Put Data ('{}': '{}')...\n", light_path, value_new);
+        // println!("Put Data ('{}': '{}')...\n", light_path, value_new);
         workspace.put(&light_path.clone().try_into().unwrap(), zenoh::Value::Json(value_new)).await.unwrap();
-    
+
+        // 发送给CV红绿灯数据
+        send(road_id.clone(), zenoh_url.clone(), light_vec).await;
+
         tokio::time::sleep_until(now.checked_add(Duration::from_secs(1)).unwrap()).await;
         
     }
@@ -295,7 +259,7 @@ fn read_config(file_name: &str) -> (String, String) {
     let config = &config_docs[0];
     let light_group_cfg = &config["light_id_group"];
     let road_id =  String::from(config["road_id"].as_str().unwrap());
-    let cv_url =  String::from(config["cv_url"].as_str().unwrap());
+    let zenoh_url =  String::from(config["server_zenoh_url"].as_str().unwrap());
 
     // 读取灯的变化时间
     {
@@ -344,7 +308,7 @@ fn read_config(file_name: &str) -> (String, String) {
 
     }
     
-    (road_id, cv_url)
+    (road_id, zenoh_url)
 }
 
 
@@ -392,61 +356,15 @@ async fn serve_http() -> tide::Result<()> {
 }
 
 // 1s发送一次红绿灯结果
-async fn send(road_id:String, cv_url: String) {
-    let config = Properties::default();
-    let zenoh = Zenoh::new(config.into()).await.unwrap();
-
-    println!("New workspace...");
-    let workspace = zenoh.workspace(None).await.unwrap();
-    let light_path = format!("/light/detail/{}", road_id);
-    loop {
-        let now = Instant::now();
-
-        // 1. 取出原有数据，需要更新时间
-        let mut lgt_now = workspace.get(&light_path.clone().try_into().unwrap()).await.unwrap();
-        let mut lgt_info_json:Vec<Value> = Vec::new();
-
-        while let Some(data) = lgt_now.next().await {
-            let data: &str = &data.value.clone().encode_to_string().2.to_owned();
-            // 按组来的灯的信息
-            let lgt_info_obj: Value = serde_json::from_str(data).unwrap();
-            // Object({"group2": Array([Object({"id": String("light_3"), "color": Number(2), "remain": Number(5)}), Object({"id": String("light_4"), "color": Number(2), "remain": Number(5)})]), "group1": Array([Object({"id": String("light_1"), "color": Number(1), "remain": Number(6)}), Object({"id": String("light_2"), "color": Number(1), "remain": Number(6)})])})
-            {
-                let mut light_group = LIGHTGROUP.lock().unwrap();
-                for (group_name, _) in light_group.iter_mut() {
-                    // Array([Object({"id": String("light_3"), "color": Number(1), "remain": Number(6)}), Object({"id": String("light_4"), "color": Number(1), "remain": Number(6)})])
-                    // println!("asdfasdf {:?}", lgt_info_obj[group_name]);
-                    let lgt_info: &Vec<Value> = &lgt_info_obj[group_name].as_array().unwrap();
-                    for lgt in lgt_info {
-                        // println!("asdfasdf {:?}", lgt);
-                        lgt_info_json.push(lgt.clone());
-
-                    }
-                }
-            }
-        }
-        println!("{:#?}", serde_json::json!({
-            "road_id": road_id,
-            "lgt_info": lgt_info_json,
-        }));
-        // let echo_json: serde_json::Value = reqwest::Client::new()
-        // .post(&cv_url)
-        // .json(&serde_json::json!({
-        //     "road_id": road_id,
-        //     "lgt_info": lgt_info_json,
-        // }))
-        // .send()
-        // .await.unwrap()
-        // .json()
-        // .await.unwrap();
-        // println!("{:#?}", echo_json);
-        tokio::time::sleep_until(now.checked_add(Duration::from_secs(1)).unwrap()).await;
-    }
+async fn send(road_id:String, zenoh_url: String, lgt_info_vec:Vec<Light>) {
+    let url = format!("{}{}", zenoh_url, road_id);
+    let echo_json = reqwest::Client::new()
+    .put(&url)
+    .json(&serde_json::json!(lgt_info_vec))
+    .send()
+    .await.unwrap();
     
-
-    
-
-    // println!("{:#?}", echo_json);
+    println!("{:#?}", echo_json);
     // Object(
     //     {
     //         "body": String(
@@ -467,19 +385,15 @@ async fn send(road_id:String, cv_url: String) {
 
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     let f = String::from("/home/duan/study/src/default.yaml");
-    let (road_id, cv_url) = read_config(&f);
+    let (road_id, zenoh_url) = read_config(&f);
     
     tokio::spawn(serve_http());
+    // tokio::spawn(sub());
 
-    // 一秒一次请求
-    tokio::spawn(send(road_id.clone(), cv_url.clone()));
-    // send(road_id.clone(), &cv_url).await;
-    
-    light_loop(road_id).await;
+    light_loop(road_id, zenoh_url).await;
     
     Ok(())
 }
