@@ -67,7 +67,7 @@ URL： ip:port/rule_change
 |  ----  | ----  | ----  |
 | road_id  | string | 十字路口ID |
 | light_id      | string    | 红绿灯名字|
-| remain        | i32    | 剩余时间               |
+| remain        | i32    | 剩余时间，若剩余时间为-1，则永不变灯             |
 | color         | i32    | 1 红 2 绿 3 黄 0 灭灯|
 
 响应消息：
