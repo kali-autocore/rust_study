@@ -6,7 +6,8 @@ use futures::prelude::*;
 // use async_std::task;
 use yaml_rust::{YamlLoader};
 use serde::{Deserialize, Serialize};
-use tide::{Body, Request};
+use tide::utils::{After, Before};
+use tide::{Body, Request, Response};
 use zenoh::*;
 use tokio;
 use tokio::time::Instant;
@@ -48,7 +49,7 @@ struct RuleMessage {
 }
 
 #[derive(Deserialize, Serialize)]
-struct Response {
+struct ResponseData {
     status: i32,
     message: String,
 }
@@ -320,12 +321,10 @@ async fn serve_http() -> tide::Result<()> {
 
     app.at("/").get(|_| async { Ok("OK") });
     
+    
     // 红绿灯规则调整
     app.at("/rule_change").post(|mut req: Request<()>| async move {
-        let rule: RuleMessage = req.body_json().await?;
-        // light_id: String,
-        // color: i32,
-        // remain: i64,
+        let rule: RuleMessage = req.body_form().await?;
         println!("Message: light_id: {}, color: {}, remain: {}", rule.light_id, rule.color, rule.remain);
         let remain = rule.remain;
         let color = rule.color;
@@ -344,9 +343,14 @@ async fn serve_http() -> tide::Result<()> {
         init_lgt_status(&lgt_id, init_color, remain);
 
         // 返回一个没用的response
-        let response =  Response {status: 1, message: String::from("")};
-
-        Ok(Body::from_json(&response)?)
+        let body_data =  ResponseData {status: 1, message: String::from("")};
+        let response = Response::builder(200)
+         .body(serde_json::json!(&body_data))
+         .header("Content-Type", "application/json")
+         .header("Access-Control-Allow-Origin", "*")
+         .build();
+        // println!("{:?}", response);
+        Ok(response)
     });
 
     //http server启动
@@ -364,7 +368,7 @@ async fn send(road_id:String, zenoh_url: String, lgt_info_vec:Vec<Light>) {
     .send()
     .await.unwrap();
     
-    println!("{:#?}", echo_json);
+    // println!("{:#?}", echo_json);
     // Object(
     //     {
     //         "body": String(
