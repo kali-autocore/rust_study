@@ -9,7 +9,7 @@ mod http_server;
 /// 3. 启动红绿灯运行
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    let f = String::from("/home/duan/study/src/default.yaml");
+    let f = String::from("/home/duan/study/config.yaml");
     let (road_id, zenoh_url) = read_config(&f);
     
     tokio::spawn(http_server::serve_http());

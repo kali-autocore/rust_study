@@ -41,7 +41,6 @@ pub async fn serve_http() -> tide::Result<()> {
         };
         // 重新初始化
         light::init_light_duration(color, remain);
-        // 重新初始化灯的状态
         light::init_lgt_status(&lgt_id, init_color, remain);
 
         // 返回一个没用的response
@@ -54,7 +53,6 @@ pub async fn serve_http() -> tide::Result<()> {
         Ok(response)
     });
 
-    //http server启动
     println!("start server");
     app.listen("0.0.0.0:8080").await?;
     Ok(())

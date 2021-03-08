@@ -8,7 +8,6 @@ use std::convert::TryInto;
 use zenoh::*;
 use std::time::Duration;
 
-//灯的颜色枚举
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 pub enum LightColor {
     UNKNOWN = 0,
@@ -17,9 +16,6 @@ pub enum LightColor {
     YELLOW = 3,
 }
 
-// impl LightStatus {
-//     pub fn get
-// }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Light {
@@ -36,7 +32,6 @@ pub struct LightDuration {
     pub unknown: i64
 }
 
-// 主灯的状态，包括当前颜色，和倒计时
 #[derive(Debug, Clone)]
 pub struct LightStatus {
     pub color: LightColor,
@@ -181,7 +176,6 @@ pub async fn light_loop(road_id: String, zenoh_url: String) {
     let config = Properties::default();
     let zenoh = Zenoh::new(config.into()).await.unwrap();
 
-    println!("New workspace...");
     let workspace = zenoh.workspace(None).await.unwrap();
     let light_path = format!("/light/detail/{}", road_id);
     
@@ -234,29 +228,10 @@ pub async fn light_loop(road_id: String, zenoh_url: String) {
 // 1s发送一次红绿灯结果
 async fn send(road_id:String, zenoh_url: String, lgt_info_vec:Vec<Light>) {
     let url = format!("{}{}", zenoh_url, road_id);
-    let echo_json = reqwest::Client::new()
+    reqwest::Client::new()
     .put(&url)
     .json(&serde_json::json!(lgt_info_vec))
     .send()
     .await.unwrap();
     
-    // println!("{:#?}", echo_json);
-    // Object(
-    //     {
-    //         "body": String(
-    //             "https://docs.rs/reqwest"
-    //         ),
-    //         "id": Number(
-    //             101
-    //         ),
-    //         "title": String(
-    //             "Reqwest.rs"
-    //         ),
-    //         "userId": Number(
-    //             1
-    //         )
-    //     }
-    // )
-    // Ok(())
-
 }

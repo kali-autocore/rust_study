@@ -25,7 +25,6 @@ pub fn read_config(file_name: &str) -> (String, String) {
     }
     
     // 读取配置中的红绿灯颜色
-    // let default_color::LightColor;
     let default_color:LightColor;
     match config["color"].as_i64().unwrap() {
         1 => default_color = LightColor::RED,
@@ -62,6 +61,7 @@ pub fn read_config(file_name: &str) -> (String, String) {
         }
 
     }
+    
     println!("read config ok");
     (road_id, zenoh_url)
 }
